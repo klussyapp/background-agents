@@ -54,7 +54,6 @@ The control plane provides:
 | `/sessions`                  | POST      | Create new session       |
 | `/sessions/:id`              | GET       | Get session state        |
 | `/sessions/:id`              | DELETE    | Delete session           |
-| `/sessions/:id/warm`         | POST      | Pre-warm sandbox         |
 | `/sessions/:id/prompt`       | POST      | Enqueue prompt           |
 | `/sessions/:id/stop`         | POST      | Stop execution           |
 | `/sessions/:id/ws`           | WebSocket | Real-time connection     |

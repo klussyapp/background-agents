@@ -198,11 +198,6 @@ const routes: Route[] = [
   },
   {
     method: "POST",
-    pattern: parsePattern("/sessions/:id/warm"),
-    handler: handleWarmSession,
-  },
-  {
-    method: "POST",
     pattern: parsePattern("/sessions/:id/prompt"),
     handler: handleSessionPrompt,
   },
@@ -523,18 +518,6 @@ async function handleDeleteSession(
   // when no longer referenced. We could also call a cleanup method on the DO.
 
   return json({ status: "deleted", sessionId });
-}
-
-async function handleWarmSession(
-  request: Request,
-  env: Env,
-  match: RegExpMatchArray
-): Promise<Response> {
-  const sessionId = match.groups?.id;
-  if (!sessionId) return error("Session ID required");
-
-  // TODO: Call Modal to warm sandbox
-  return json({ status: "warming" });
 }
 
 async function handleSessionPrompt(
