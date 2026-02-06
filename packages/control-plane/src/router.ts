@@ -10,6 +10,11 @@ import {
   getInstallationRepository,
   listInstallationRepositories,
 } from "./auth/github-app";
+import {
+  resolveScmProviderFromEnv,
+  SourceControlProviderError,
+  type SourceControlProviderName,
+} from "./source-control";
 import { RepoSecretsStore, RepoSecretsValidationError } from "./db/repo-secrets";
 import { SessionIndexStore } from "./db/session-index";
 
@@ -89,6 +94,18 @@ function error(message: string, status = 400): Response {
   return json({ error: message }, status);
 }
 
+function withCorsAndTraceHeaders(response: Response, ctx: RequestContext): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("x-request-id", ctx.request_id);
+  headers.set("x-trace-id", ctx.trace_id);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 /**
  * Get Durable Object stub for a session.
  * Returns the stub or null if session ID is missing.
@@ -115,6 +132,46 @@ const SANDBOX_AUTH_ROUTES: RegExp[] = [
   /^\/sessions\/[^/]+\/pr$/, // PR creation from sandbox
 ];
 
+type CachedScmProvider =
+  | {
+      envValue: string | undefined;
+      provider: SourceControlProviderName;
+      error?: never;
+    }
+  | {
+      envValue: string | undefined;
+      provider?: never;
+      error: SourceControlProviderError;
+    };
+
+let cachedScmProvider: CachedScmProvider | null = null;
+
+function resolveDeploymentScmProvider(env: Env): SourceControlProviderName {
+  const envValue = env.SCM_PROVIDER;
+  if (!cachedScmProvider || cachedScmProvider.envValue !== envValue) {
+    try {
+      cachedScmProvider = {
+        envValue,
+        provider: resolveScmProviderFromEnv(envValue),
+      };
+    } catch (errorValue) {
+      cachedScmProvider = {
+        envValue,
+        error:
+          errorValue instanceof SourceControlProviderError
+            ? errorValue
+            : new SourceControlProviderError("Invalid SCM provider configuration", "permanent"),
+      };
+    }
+  }
+
+  if (cachedScmProvider.error) {
+    throw cachedScmProvider.error;
+  }
+
+  return cachedScmProvider.provider;
+}
+
 /**
  * Check if a path matches any public route pattern.
  */
@@ -127,6 +184,47 @@ function isPublicRoute(path: string): boolean {
  */
 function isSandboxAuthRoute(path: string): boolean {
   return SANDBOX_AUTH_ROUTES.some((pattern) => pattern.test(path));
+}
+
+function enforceImplementedScmProvider(
+  path: string,
+  env: Env,
+  ctx: RequestContext
+): Response | null {
+  try {
+    const provider = resolveDeploymentScmProvider(env);
+    if (provider !== "github" && !isPublicRoute(path)) {
+      logger.warn("SCM provider not implemented", {
+        event: "scm.provider_not_implemented",
+        scm_provider: provider,
+        http_path: path,
+        request_id: ctx.request_id,
+        trace_id: ctx.trace_id,
+      });
+      const response = error(
+        `SCM provider '${provider}' is not implemented in this deployment.`,
+        501
+      );
+      return withCorsAndTraceHeaders(response, ctx);
+    }
+
+    return null;
+  } catch (errorValue) {
+    const errorMessage =
+      errorValue instanceof SourceControlProviderError
+        ? errorValue.message
+        : "Invalid SCM provider configuration";
+
+    logger.error("Invalid SCM provider configuration", {
+      event: "scm.provider_invalid",
+      error: errorValue instanceof Error ? errorValue : String(errorValue),
+      request_id: ctx.request_id,
+      trace_id: ctx.trace_id,
+    });
+
+    const response = error(errorMessage, 500);
+    return withCorsAndTraceHeaders(response, ctx);
+  }
 }
 
 /**
@@ -406,30 +504,19 @@ export async function handleRequest(
             // Sandbox auth passed, continue to route handler
           } else {
             // Both HMAC and sandbox auth failed
-            const corsHeaders = new Headers(sandboxAuthError.headers);
-            corsHeaders.set("Access-Control-Allow-Origin", "*");
-            corsHeaders.set("x-request-id", ctx.request_id);
-            corsHeaders.set("x-trace-id", ctx.trace_id);
-            return new Response(sandboxAuthError.body, {
-              status: sandboxAuthError.status,
-              statusText: sandboxAuthError.statusText,
-              headers: corsHeaders,
-            });
+            return withCorsAndTraceHeaders(sandboxAuthError, ctx);
           }
         }
       } else {
         // Not a sandbox auth route, return HMAC auth error
-        const corsHeaders = new Headers(hmacAuthError.headers);
-        corsHeaders.set("Access-Control-Allow-Origin", "*");
-        corsHeaders.set("x-request-id", ctx.request_id);
-        corsHeaders.set("x-trace-id", ctx.trace_id);
-        return new Response(hmacAuthError.body, {
-          status: hmacAuthError.status,
-          statusText: hmacAuthError.statusText,
-          headers: corsHeaders,
-        });
+        return withCorsAndTraceHeaders(hmacAuthError, ctx);
       }
     }
+  }
+
+  const providerCheck = enforceImplementedScmProvider(path, env, ctx);
+  if (providerCheck) {
+    return providerCheck;
   }
 
   // Find matching route
@@ -460,12 +547,6 @@ export async function handleRequest(
         return error("Internal server error", 500);
       }
 
-      // Create new response with CORS + correlation headers
-      const corsHeaders = new Headers(response.headers);
-      corsHeaders.set("Access-Control-Allow-Origin", "*");
-      corsHeaders.set("x-request-id", ctx.request_id);
-      corsHeaders.set("x-trace-id", ctx.trace_id);
-
       const durationMs = Date.now() - startTime;
       logger.info("http.request", {
         event: "http.request",
@@ -479,11 +560,7 @@ export async function handleRequest(
         ...ctx.metrics.summarize(),
       });
 
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: corsHeaders,
-      });
+      return withCorsAndTraceHeaders(response, ctx);
     }
   }
 
