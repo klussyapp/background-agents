@@ -6,7 +6,15 @@
  */
 
 import { generateId, hashToken, decryptToken, encryptToken } from "../auth/crypto";
+import { getGitHubAppConfig, getInstallationRepository } from "../auth/github-app";
 import { refreshAccessToken } from "../auth/github";
+import {
+  refreshOpenAIToken,
+  extractOpenAIAccountId,
+  OpenAITokenRefreshError,
+} from "../auth/openai";
+import { RepoSecretsStore } from "../db/repo-secrets";
+import { GlobalSecretsStore } from "../db/global-secrets";
 import { DEFAULT_MODEL, isValidModel, getValidModelOrDefault } from "../utils/models";
 import { generateBranchName } from "@open-inspect/shared";
 import { SourceControlProviderError, type SourceControlAuthContext } from "../source-control";
@@ -84,6 +92,11 @@ export const INTERNAL_ROUTES: InternalRoute[] = [
     method: "POST",
     path: "/internal/verify-sandbox-token",
     handler: handleVerifySandboxToken,
+  },
+  {
+    method: "POST",
+    path: "/internal/openai-token-refresh",
+    handler: handleOpenAITokenRefresh,
   },
 ];
 
@@ -817,6 +830,194 @@ async function handleVerifySandboxToken(
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * Handle OpenAI token refresh.
+ * Reads the refresh token from D1 secrets, calls OpenAI, stores the rotated
+ * token back, and returns only the access token to the sandbox.
+ */
+async function handleOpenAITokenRefresh(
+  deps: HandlerDeps,
+  _request: Request,
+  _url: URL
+): Promise<Response> {
+  const { repository, env, log } = deps;
+
+  const session = repository.getSession();
+  if (!session) {
+    return Response.json({ error: "No session" }, { status: 404 });
+  }
+
+  const encryptionKey = env.REPO_SECRETS_ENCRYPTION_KEY;
+  if (!env.DB || !encryptionKey) {
+    return Response.json({ error: "Secrets not configured" }, { status: 500 });
+  }
+
+  const db = env.DB;
+  const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+  type TokenState =
+    | { type: "cached"; accessToken: string; expiresIn: number; accountId?: string }
+    | { type: "refresh"; refreshToken: string; source: "repo" | "global"; repoId: number };
+
+  const checkSecrets = (
+    secrets: Record<string, string>,
+    source: "repo" | "global",
+    repoId: number
+  ): TokenState | null => {
+    if (!secrets.OPENAI_OAUTH_REFRESH_TOKEN) return null;
+    const cachedToken = secrets.OPENAI_OAUTH_ACCESS_TOKEN;
+    const expiresAt = parseInt(secrets.OPENAI_OAUTH_ACCESS_TOKEN_EXPIRES_AT || "0");
+    const now = Date.now();
+    if (cachedToken && expiresAt - now > REFRESH_BUFFER_MS) {
+      return {
+        type: "cached",
+        accessToken: cachedToken,
+        expiresIn: Math.floor((expiresAt - now) / 1000),
+        accountId: secrets.OPENAI_OAUTH_ACCOUNT_ID,
+      };
+    }
+    return { type: "refresh", refreshToken: secrets.OPENAI_OAUTH_REFRESH_TOKEN, source, repoId };
+  };
+
+  const readTokenState = async (): Promise<TokenState | null> => {
+    const repoId = await ensureRepoId(deps, session);
+    const repoStore = new RepoSecretsStore(db, encryptionKey);
+    const repoSecrets = await repoStore.getDecryptedSecrets(repoId);
+    const repoResult = checkSecrets(repoSecrets, "repo", repoId);
+    if (repoResult) return repoResult;
+
+    const globalStore = new GlobalSecretsStore(db, encryptionKey);
+    const globalSecrets = await globalStore.getDecryptedSecrets();
+    return checkSecrets(globalSecrets, "global", repoId);
+  };
+
+  let tokenState: Awaited<ReturnType<typeof readTokenState>>;
+  try {
+    tokenState = await readTokenState();
+  } catch (e) {
+    log.error("Failed to read OpenAI token state from secrets", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return Response.json({ error: "Failed to read token state" }, { status: 500 });
+  }
+
+  if (!tokenState) {
+    return Response.json({ error: "OPENAI_OAUTH_REFRESH_TOKEN not configured" }, { status: 404 });
+  }
+
+  if (tokenState.type === "cached") {
+    return Response.json({
+      access_token: tokenState.accessToken,
+      expires_in: tokenState.expiresIn,
+      account_id: tokenState.accountId,
+    });
+  }
+
+  const attemptRefresh = async (
+    refreshToken: string,
+    info: { repoId: number; source: "repo" | "global" }
+  ): Promise<Response> => {
+    const tokens = await refreshOpenAIToken(refreshToken);
+    const accountId = extractOpenAIAccountId(tokens);
+    const expiresAt = Date.now() + (tokens.expires_in ?? 3600) * 1000;
+
+    try {
+      const secretsToWrite: Record<string, string> = {
+        OPENAI_OAUTH_REFRESH_TOKEN: tokens.refresh_token,
+        OPENAI_OAUTH_ACCESS_TOKEN: tokens.access_token,
+        OPENAI_OAUTH_ACCESS_TOKEN_EXPIRES_AT: String(expiresAt),
+      };
+      if (accountId) {
+        secretsToWrite.OPENAI_OAUTH_ACCOUNT_ID = accountId;
+      }
+      if (info.source === "repo") {
+        const repoStore = new RepoSecretsStore(db, encryptionKey);
+        await repoStore.setSecrets(
+          info.repoId,
+          session.repo_owner,
+          session.repo_name,
+          secretsToWrite
+        );
+      } else {
+        const globalStore = new GlobalSecretsStore(db, encryptionKey);
+        await globalStore.setSecrets(secretsToWrite);
+      }
+      log.info("OpenAI tokens rotated and cached", {
+        source: info.source,
+        has_account_id: !!accountId,
+      });
+    } catch (e) {
+      log.error("Failed to store rotated OpenAI tokens", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
+    return Response.json({
+      access_token: tokens.access_token,
+      expires_in: tokens.expires_in,
+      account_id: accountId,
+    });
+  };
+
+  try {
+    return await attemptRefresh(tokenState.refreshToken, tokenState);
+  } catch (e) {
+    if (e instanceof OpenAITokenRefreshError && e.status === 401) {
+      log.warn("OpenAI refresh got 401, checking for concurrent rotation", {
+        source: tokenState.source,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      try {
+        const reread = await readTokenState();
+        if (reread?.type === "cached") {
+          log.info("Using cached access token from concurrent rotation");
+          return Response.json({
+            access_token: reread.accessToken,
+            expires_in: reread.expiresIn,
+            account_id: reread.accountId,
+          });
+        }
+        if (reread?.type === "refresh" && reread.refreshToken !== tokenState.refreshToken) {
+          log.info("Detected concurrent token rotation, retrying");
+          return await attemptRefresh(reread.refreshToken, reread);
+        }
+      } catch (retryErr) {
+        log.error("Retry after 401 also failed", {
+          error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+        });
+      }
+
+      return Response.json({ error: "OpenAI token refresh failed: unauthorized" }, { status: 401 });
+    }
+
+    log.error("OpenAI token refresh failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return Response.json({ error: "OpenAI token refresh failed" }, { status: 502 });
+  }
+}
+
+/**
+ * Look up or resolve the GitHub repository ID for a session.
+ */
+async function ensureRepoId(
+  deps: HandlerDeps,
+  session: { repo_id: number | null; repo_owner: string; repo_name: string; id: string }
+): Promise<number> {
+  if (session.repo_id) return session.repo_id;
+
+  const appConfig = getGitHubAppConfig(deps.env);
+  if (!appConfig) throw new Error("GitHub App not configured");
+
+  const repo = await getInstallationRepository(appConfig, session.repo_owner, session.repo_name);
+  if (!repo) throw new Error("Repository is not installed for the GitHub App");
+
+  deps.repository.updateSessionRepoId(repo.id);
+  return repo.id;
 }
 
 // ---------------------------------------------------------------------------
