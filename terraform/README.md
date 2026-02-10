@@ -7,11 +7,10 @@ Terraform.
 
 The infrastructure spans three cloud providers:
 
-| Provider       | Resources                                            | Terraform Support                |
-| -------------- | ---------------------------------------------------- | -------------------------------- |
-| **Cloudflare** | Workers, KV Namespaces, Durable Objects, D1 Database | Native provider                  |
-| **Vercel**     | Next.js Web App                                      | Native provider                  |
-| **Modal**      | Sandbox Infrastructure                               | CLI wrapper (no provider exists) |
+| Provider       | Resources                                                     | Terraform Support                |
+| -------------- | ------------------------------------------------------------- | -------------------------------- |
+| **Cloudflare** | Workers, KV Namespaces, Durable Objects, D1 Database, Web App | Native provider + CLI wrapper    |
+| **Modal**      | Sandbox Infrastructure                                        | CLI wrapper (no provider exists) |
 
 ## Directory Structure
 
@@ -22,7 +21,7 @@ terraform/
 ├── modules/                      # Reusable Terraform modules
 │   ├── cloudflare-kv/           # KV namespace management
 │   ├── cloudflare-worker/       # Worker deployment with bindings (KV, DO, D1)
-│   ├── vercel-project/          # Vercel project + environment vars
+│   ├── cloudflare-nextjs/       # Next.js on Cloudflare Workers (@opennextjs/cloudflare)
 │   └── modal-app/               # Modal CLI wrapper
 │       └── scripts/             # Deployment scripts
 ├── environments/
@@ -62,21 +61,17 @@ brew install node@22
 
 3. **Note your Account ID** (found in dashboard URL)
 
-### 3. Vercel Setup
-
-1. **Create API Token** at [Vercel Account Settings](https://vercel.com/account/tokens)
-2. **Note your Team ID** (found in team settings URL)
-
-### 4. Modal Setup
+### 3. Modal Setup
 
 1. **Sign up** at [Modal](https://modal.com)
 2. **Create API Token** at Modal Settings
 
-### 5. GitHub Apps
+### 4. GitHub Apps
 
 1. **OAuth App** - For user authentication
    - Create at: https://github.com/settings/developers
-   - Callback URL: `https://<your-vercel-app>.vercel.app/api/auth/callback/github`
+   - Callback URL:
+     `https://open-inspect-web-<name>.<subdomain>.workers.dev/api/auth/callback/github`
 
 2. **GitHub App** - For repository access in sandboxes
    - Create at: https://github.com/settings/apps
@@ -85,7 +80,7 @@ brew install node@22
      openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in key.pem -out key-pkcs8.pem
      ```
 
-### 6. Slack App
+### 5. Slack App
 
 Create at [Slack API](https://api.slack.com/apps) and note:
 
@@ -155,10 +150,6 @@ CLOUDFLARE_API_TOKEN
 CLOUDFLARE_ACCOUNT_ID
 R2_ACCESS_KEY_ID
 R2_SECRET_ACCESS_KEY
-
-# Vercel
-VERCEL_API_TOKEN
-VERCEL_TEAM_ID
 
 # Modal
 MODAL_TOKEN_ID
@@ -244,37 +235,37 @@ module "my_worker" {
 
 **Outputs:** `worker_name`, `worker_id`, `version_id`, `deployment_id`, `worker_url`
 
-### vercel-project
+### cloudflare-nextjs
 
-Creates a Vercel project with environment variables.
+Deploys a Next.js app to Cloudflare Workers via `@opennextjs/cloudflare`. Uses `null_resource` with
+`local-exec` provisioners (same pattern as `modal-app`).
 
 ```hcl
 module "web_app" {
-  source = "../../modules/vercel-project"
+  source = "../../modules/cloudflare-nextjs"
 
-  project_name = "my-app"
-  team_id      = var.vercel_team_id
-  framework    = "nextjs"
+  cloudflare_account_id = var.cloudflare_account_id
+  cloudflare_api_token  = var.cloudflare_api_token
 
-  git_repository = {
-    type = "github"
-    repo = "owner/repo"
+  worker_name  = "my-web-app"
+  project_path = "${path.root}/../../../packages/web"
+  source_hash  = data.external.web_source_hash.result.hash
+
+  build_env_vars = {
+    NEXT_PUBLIC_WS_URL = "wss://api.example.com"
   }
 
-  root_directory = "packages/web"
+  plain_text_vars = {
+    GITHUB_CLIENT_ID = "..."
+  }
 
-  environment_variables = [
-    {
-      key       = "API_URL"
-      value     = "https://api.example.com"
-      targets   = ["production", "preview"]
-      sensitive = false
-    }
-  ]
+  secrets = {
+    NEXTAUTH_SECRET = var.nextauth_secret
+  }
 }
 ```
 
-**Outputs:** `project_id`, `project_name`, `production_url`
+**Outputs:** `worker_name`, `worker_url`, `deploy_id`
 
 ### modal-app
 
@@ -357,8 +348,8 @@ curl https://open-inspect-control-plane-prod.<subdomain>.workers.dev/health
 # 2. Health check Modal (replace <workspace> with your Modal workspace)
 curl https://<workspace>--open-inspect-api-health.modal.run
 
-# 3. Verify Vercel deployment (replace with your Vercel app URL)
-curl https://<your-vercel-app>.vercel.app
+# 3. Verify web app deployment (replace with your workers.dev URL)
+curl https://open-inspect-web-<name>.<subdomain>.workers.dev
 
 # 4. Test authenticated endpoint (should return 401)
 curl https://open-inspect-control-plane-prod.<subdomain>.workers.dev/sessions

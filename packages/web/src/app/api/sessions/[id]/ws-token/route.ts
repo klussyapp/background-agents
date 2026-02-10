@@ -1,8 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { getToken } from "next-auth/jwt";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { controlPlaneFetch } from "@/lib/control-plane";
 
 /**
@@ -17,7 +15,7 @@ import { controlPlaneFetch } from "@/lib/control-plane";
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const routeStart = Date.now();
 
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   const authMs = Date.now() - routeStart;
 
   if (!session?.user) {
@@ -31,10 +29,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const user = session.user;
     const userId = user.id || user.email || "anonymous";
 
-    const jwtStart = Date.now();
-    const jwt = await getToken({ req: request });
-    const jwtMs = Date.now() - jwtStart;
-
     const fetchStart = Date.now();
     const response = await controlPlaneFetch(`/sessions/${sessionId}/ws-token`, {
       method: "POST",
@@ -44,16 +38,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         githubLogin: user.login,
         githubName: user.name,
         githubEmail: user.email,
-        githubToken: jwt?.accessToken as string | undefined,
-        githubTokenExpiresAt: jwt?.accessTokenExpiresAt as number | undefined,
-        githubRefreshToken: jwt?.refreshToken as string | undefined,
+        githubToken: session.accessToken,
+        githubTokenExpiresAt: session.accessTokenExpiresAt,
+        githubRefreshToken: session.refreshToken,
       }),
     });
     const fetchMs = Date.now() - fetchStart;
     const totalMs = Date.now() - routeStart;
 
     console.log(
-      `[ws-token] session=${sessionId} total=${totalMs}ms auth=${authMs}ms jwt=${jwtMs}ms fetch=${fetchMs}ms status=${response.status}`
+      `[ws-token] session=${sessionId} total=${totalMs}ms auth=${authMs}ms fetch=${fetchMs}ms status=${response.status}`
     );
 
     if (!response.ok) {

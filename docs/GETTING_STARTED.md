@@ -12,11 +12,10 @@ This guide walks you through deploying your own instance of Open-Inspect using T
 
 Open-Inspect uses Terraform to automate deployment across three cloud providers:
 
-| Provider       | Purpose                          | What Terraform Creates                               |
-| -------------- | -------------------------------- | ---------------------------------------------------- |
-| **Cloudflare** | Control plane, session state     | Workers, KV namespaces, Durable Objects, D1 Database |
-| **Vercel**     | Web application                  | Project, environment variables                       |
-| **Modal**      | Sandbox execution infrastructure | App deployment, secrets, volumes                     |
+| Provider       | Purpose                               | What Terraform Creates                               |
+| -------------- | ------------------------------------- | ---------------------------------------------------- |
+| **Cloudflare** | Control plane, web app, session state | Workers, KV namespaces, Durable Objects, D1 Database |
+| **Modal**      | Sandbox execution infrastructure      | App deployment, secrets, volumes                     |
 
 **Your job**: Create accounts, gather credentials, and configure one file (`terraform.tfvars`).
 **Terraform's job**: Create all infrastructure and configure services.
@@ -31,8 +30,7 @@ Create accounts on these services before continuing:
 
 | Service                                          | Purpose                   |
 | ------------------------------------------------ | ------------------------- |
-| [Cloudflare](https://dash.cloudflare.com)        | Control plane hosting     |
-| [Vercel](https://vercel.com)                     | Web application hosting   |
+| [Cloudflare](https://dash.cloudflare.com)        | Control plane + web app   |
 | [Modal](https://modal.com)                       | Sandbox infrastructure    |
 | [GitHub](https://github.com/settings/developers) | OAuth + repository access |
 | [Anthropic](https://console.anthropic.com)       | Claude API                |
@@ -103,15 +101,6 @@ Create an R2 API Token:
 2. Create token with **Object Read & Write** permission
 3. Note the **Access Key ID** and **Secret Access Key**
 
-### Vercel
-
-1. Go to [Vercel Account Settings → Tokens](https://vercel.com/account/tokens)
-2. Create a new token with full access
-3. **Note your Team/Account ID**:
-   - Go to **Settings** (Account Settings or Team Settings)
-   - Look for **"Your ID"** or find it in the URL: `vercel.com/teams/TEAM_ID/...`
-   - Even personal accounts have an ID (usually starts with `team_`)
-
 ### Modal
 
 1. Go to [Modal Settings](https://modal.com/settings)
@@ -136,16 +125,18 @@ access.
 2. Click **"New GitHub App"**
 3. Fill in the basics:
    - **Name**: `Open-Inspect-YourName` (must be globally unique)
-   - **Homepage URL**: `https://open-inspect-{your-deployment-name}.vercel.app` (or your custom
+   - **Homepage URL**:
+     `https://open-inspect-web-{your-deployment-name}.{your-subdomain}.workers.dev` (or your custom
      domain)
    - **Webhook**: Uncheck "Active" (not needed)
 4. Configure **Identifying and authorizing users** (OAuth):
    - **Callback URL**:
-     `https://open-inspect-{your-deployment-name}.vercel.app/api/auth/callback/github`
+     `https://open-inspect-web-{your-deployment-name}.{your-subdomain}.workers.dev/api/auth/callback/github`
 
-   > **Important**: The callback URL must match your deployed Vercel URL exactly. Terraform creates
-   > `https://open-inspect-{deployment_name}.vercel.app` where `{deployment_name}` is the unique
-   > value you set in `terraform.tfvars` (e.g., your GitHub username or company name).
+   > **Important**: The callback URL must match your deployed web app URL exactly. Terraform deploys
+   > `https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev` where `{deployment_name}`
+   > is the unique value you set in `terraform.tfvars` and `{subdomain}` is your Cloudflare Workers
+   > subdomain.
 
 5. Set **Repository permissions**:
    - Contents: **Read & Write**
@@ -274,8 +265,6 @@ Fill in all the values you gathered. Here's the structure:
 cloudflare_api_token        = "your-cloudflare-api-token"
 cloudflare_account_id       = "your-account-id"
 cloudflare_worker_subdomain = "your-subdomain"  # from *.your-subdomain.workers.dev
-vercel_api_token            = "your-vercel-token"
-vercel_team_id              = "team_xxxxx"       # Your Vercel ID (even personal accounts have one)
 modal_token_id              = "your-modal-token-id"
 modal_token_secret          = "your-modal-token-secret"
 modal_workspace             = "your-modal-workspace"
@@ -307,7 +296,6 @@ modal_api_secret         = "your-generated-value"
 nextauth_secret          = "your-generated-value"
 
 # Configuration
-# IMPORTANT: deployment_name must be globally unique for Vercel URLs
 # Use your GitHub username, company name, or a random string
 deployment_name = "your-unique-name"  # e.g., "acme", "johndoe", "mycompany"
 project_root    = "../../../"
@@ -428,39 +416,7 @@ The bot only responds to @mentions in channels it has been invited to.
 
 ---
 
-## Step 8: Deploy the Web App
-
-Terraform creates the Vercel project and configures environment variables, but does **not** deploy
-the code. You have two options:
-
-### Option A: Deploy via CLI (Recommended for First Deploy)
-
-```bash
-# From the repository root (replace {deployment_name} with your value from terraform.tfvars)
-npx vercel link --project open-inspect-{deployment_name}
-npx vercel --prod
-```
-
-> **Note**: The Vercel project is configured with custom build commands for the monorepo structure.
-> Terraform sets these automatically:
->
-> - Install: `cd ../.. && npm install && npm run build -w @open-inspect/shared`
-> - Build: `next build`
-
-### Option B: Link Git Repository (For Automatic Deployments)
-
-1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
-2. Find the `open-inspect-{deployment_name}` project
-3. Go to **Settings → Git**
-4. Click **"Connect Git Repository"** and select your fork
-5. Vercel will automatically deploy on push to main
-
-> **Note**: If you link Git, ensure the build settings match those configured by Terraform (Settings
-> → General → Build & Development Settings).
-
----
-
-## Step 9: Verify Deployment
+## Step 8: Verify Deployment
 
 After deployment completes, verify each component:
 
@@ -478,8 +434,8 @@ curl https://open-inspect-control-plane-{deployment_name}.YOUR-SUBDOMAIN.workers
 # 2. Modal health check (replace YOUR-WORKSPACE)
 curl https://YOUR-WORKSPACE--open-inspect-api-health.modal.run
 
-# 3. Web app (replace {deployment_name}, should return 200)
-curl -I https://open-inspect-{deployment_name}.vercel.app
+# 3. Web app (replace {deployment_name} and YOUR-SUBDOMAIN, should return 200)
+curl -I https://open-inspect-web-{deployment_name}.YOUR-SUBDOMAIN.workers.dev
 ```
 
 ### Test the Full Flow
@@ -491,41 +447,37 @@ curl -I https://open-inspect-{deployment_name}.vercel.app
 
 ---
 
-## Step 10: Set Up CI/CD (Optional)
+## Step 9: Set Up CI/CD (Optional)
 
 Enable automatic deployments when you push to main by adding GitHub Secrets.
 
 Go to your fork's Settings → Secrets and variables → Actions, and add:
 
-| Secret Name                   | Value                                                                        |
-| ----------------------------- | ---------------------------------------------------------------------------- |
-| `CLOUDFLARE_API_TOKEN`        | Your Cloudflare API token                                                    |
-| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare account ID                                                   |
-| `CLOUDFLARE_WORKER_SUBDOMAIN` | Your workers.dev subdomain                                                   |
-| `R2_ACCESS_KEY_ID`            | R2 access key ID                                                             |
-| `R2_SECRET_ACCESS_KEY`        | R2 secret access key                                                         |
-| `VERCEL_API_TOKEN`            | Vercel API token                                                             |
-| `VERCEL_TEAM_ID`              | Vercel team/account ID                                                       |
-| `VERCEL_PROJECT_ID`           | Vercel project ID (from project settings)                                    |
-| `NEXTAUTH_URL`                | Your web app URL (e.g., `https://open-inspect-{deployment_name}.vercel.app`) |
-| `MODAL_TOKEN_ID`              | Modal token ID                                                               |
-| `MODAL_TOKEN_SECRET`          | Modal token secret                                                           |
-| `MODAL_WORKSPACE`             | Modal workspace name                                                         |
-| `GH_APP_CLIENT_ID`            | GitHub App client ID                                                         |
-| `GH_APP_CLIENT_SECRET`        | GitHub App client secret                                                     |
-| `GH_APP_ID`                   | GitHub App ID                                                                |
-| `GH_APP_PRIVATE_KEY`          | GitHub App private key (PKCS#8 format)                                       |
-| `GH_APP_INSTALLATION_ID`      | GitHub App installation ID                                                   |
-| `SLACK_BOT_TOKEN`             | Slack bot token (or empty)                                                   |
-| `SLACK_SIGNING_SECRET`        | Slack signing secret (or empty)                                              |
-| `ANTHROPIC_API_KEY`           | Anthropic API key                                                            |
-| `TOKEN_ENCRYPTION_KEY`        | Generated encryption key (OAuth tokens)                                      |
-| `REPO_SECRETS_ENCRYPTION_KEY` | Generated encryption key (repo secrets)                                      |
-| `INTERNAL_CALLBACK_SECRET`    | Generated callback secret                                                    |
-| `MODAL_API_SECRET`            | Generated Modal API secret                                                   |
-| `NEXTAUTH_SECRET`             | Generated NextAuth secret                                                    |
-| `ALLOWED_USERS`               | Comma-separated GitHub usernames (or empty for all users)                    |
-| `ALLOWED_EMAIL_DOMAINS`       | Comma-separated email domains (or empty for all domains)                     |
+| Secret Name                   | Value                                                     |
+| ----------------------------- | --------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`        | Your Cloudflare API token                                 |
+| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare account ID                                |
+| `CLOUDFLARE_WORKER_SUBDOMAIN` | Your workers.dev subdomain                                |
+| `R2_ACCESS_KEY_ID`            | R2 access key ID                                          |
+| `R2_SECRET_ACCESS_KEY`        | R2 secret access key                                      |
+| `MODAL_TOKEN_ID`              | Modal token ID                                            |
+| `MODAL_TOKEN_SECRET`          | Modal token secret                                        |
+| `MODAL_WORKSPACE`             | Modal workspace name                                      |
+| `GH_APP_CLIENT_ID`            | GitHub App client ID                                      |
+| `GH_APP_CLIENT_SECRET`        | GitHub App client secret                                  |
+| `GH_APP_ID`                   | GitHub App ID                                             |
+| `GH_APP_PRIVATE_KEY`          | GitHub App private key (PKCS#8 format)                    |
+| `GH_APP_INSTALLATION_ID`      | GitHub App installation ID                                |
+| `SLACK_BOT_TOKEN`             | Slack bot token (or empty)                                |
+| `SLACK_SIGNING_SECRET`        | Slack signing secret (or empty)                           |
+| `ANTHROPIC_API_KEY`           | Anthropic API key                                         |
+| `TOKEN_ENCRYPTION_KEY`        | Generated encryption key (OAuth tokens)                   |
+| `REPO_SECRETS_ENCRYPTION_KEY` | Generated encryption key (repo secrets)                   |
+| `INTERNAL_CALLBACK_SECRET`    | Generated callback secret                                 |
+| `MODAL_API_SECRET`            | Generated Modal API secret                                |
+| `NEXTAUTH_SECRET`             | Generated NextAuth secret                                 |
+| `ALLOWED_USERS`               | Comma-separated GitHub usernames (or empty for all users) |
+| `ALLOWED_EMAIL_DOMAINS`       | Comma-separated email domains (or empty for all domains)  |
 
 Once configured, the GitHub Actions workflow will:
 
@@ -567,12 +519,13 @@ terraform init -backend-config=backend.tfvars
 1. Verify the private key is in PKCS#8 format (starts with `-----BEGIN PRIVATE KEY-----`)
 2. Check the Installation ID matches your installation
 3. Ensure the app has required permissions on the repository
-4. Verify the callback URL matches your deployed Vercel URL exactly
+4. Verify the callback URL matches your deployed web app URL exactly
 
 ### GitHub OAuth "redirect_uri is not associated with this application"
 
 The callback URL in your GitHub App settings doesn't match your deployed URL. Update the callback
-URL to match `https://open-inspect-{deployment_name}.vercel.app/api/auth/callback/github`.
+URL to match
+`https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev/api/auth/callback/github`.
 
 ### Modal deployment fails
 

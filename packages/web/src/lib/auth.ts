@@ -1,34 +1,28 @@
-import type { NextAuthOptions } from "next-auth";
-import GitHubProvider from "next-auth/providers/github";
+import NextAuth from "next-auth";
+import GitHub from "next-auth/providers/github";
 import { checkAccessAllowed, parseAllowlist } from "./access-control";
 
 // Extend NextAuth types to include GitHub-specific user info
 declare module "next-auth" {
   interface Session {
     user: {
-      id?: string; // GitHub user ID
+      id: string;
       login?: string; // GitHub username
       name?: string | null;
       email?: string | null;
       image?: string | null;
     };
-  }
-}
-
-declare module "next-auth/jwt" {
-  interface JWT {
     accessToken?: string;
     refreshToken?: string;
-    accessTokenExpiresAt?: number; // Unix timestamp in milliseconds
-    githubUserId?: string;
-    githubLogin?: string;
+    accessTokenExpiresAt?: number;
   }
 }
 
-export const authOptions: NextAuthOptions = {
-  debug: process.env.NODE_ENV === "development" || process.env.NEXTAUTH_DEBUG === "true",
+export const { auth, handlers, signIn, signOut } = NextAuth({
+  trustHost: true,
+  secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
   providers: [
-    GitHubProvider({
+    GitHub({
       clientId: process.env.GITHUB_CLIENT_ID!,
       clientSecret: process.env.GITHUB_CLIENT_SECRET!,
       authorization: {
@@ -77,13 +71,16 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }) {
       if (session.user) {
-        session.user.id = token.githubUserId;
-        session.user.login = token.githubLogin;
+        session.user.id = (token.githubUserId as string) ?? session.user.id;
+        session.user.login = token.githubLogin as string | undefined;
       }
+      session.accessToken = token.accessToken as string | undefined;
+      session.refreshToken = token.refreshToken as string | undefined;
+      session.accessTokenExpiresAt = token.accessTokenExpiresAt as number | undefined;
       return session;
     },
   },
   pages: {
     error: "/access-denied",
   },
-};
+});

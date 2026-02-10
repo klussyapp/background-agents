@@ -26,14 +26,6 @@ cloudflare_account_id = ""
 # This is the subdomain used for workers.dev URLs (e.g., "myaccount" in "worker.myaccount.workers.dev")
 cloudflare_worker_subdomain = ""
 
-# Vercel API token
-# Create at: https://vercel.com/account/tokens
-vercel_api_token = ""
-
-# Vercel team/account ID (found in Account Settings -> "Your ID")
-# Even personal accounts have an ID (usually starts with "team_")
-vercel_team_id = ""  # e.g., "team_xxxxxxxxxxxxxxxxxxxx"
-
 # Modal API token
 # Create at: https://modal.com/settings
 modal_token_id = ""
@@ -117,10 +109,9 @@ nextauth_secret = ""
 # =============================================================================
 
 # Unique deployment name (used in resource names and URLs)
-# IMPORTANT: This must be globally unique for Vercel URLs.
 # Use something unique like your GitHub username, company name, or a random suffix.
 # Example: "acme", "johndoe", "mycompany-prod"
-# The web app URL will be: https://open-inspect-{deployment_name}.vercel.app
+# The web app URL will be: https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev
 deployment_name = ""
 
 # Path to project root (relative to this directory)

@@ -24,17 +24,6 @@ variable "cloudflare_worker_subdomain" {
   type        = string
 }
 
-variable "vercel_api_token" {
-  description = "Vercel API token"
-  type        = string
-  sensitive   = true
-}
-
-variable "vercel_team_id" {
-  description = "Vercel team ID"
-  type        = string
-}
-
 variable "modal_token_id" {
   description = "Modal API token ID"
   type        = string
@@ -152,7 +141,7 @@ variable "nextauth_secret" {
 # =============================================================================
 
 variable "deployment_name" {
-  description = "Unique deployment name used in URLs and resource names. Use something unique like your GitHub username or company name (e.g., 'acme', 'johndoe'). This will create URLs like: open-inspect-{deployment_name}.vercel.app"
+  description = "Unique deployment name used in URLs and resource names. Use something unique like your GitHub username or company name (e.g., 'acme', 'johndoe'). This will create URLs like: open-inspect-web-{deployment_name}.{subdomain}.workers.dev"
   type        = string
 }
 

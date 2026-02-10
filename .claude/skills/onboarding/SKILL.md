@@ -19,16 +19,15 @@ Use TodoWrite to create a checklist tracking these phases:
 
 1. Initial setup questions
 2. Repository setup
-3. Credential collection (Cloudflare, Vercel, Modal, Anthropic)
+3. Credential collection (Cloudflare, Modal, Anthropic)
 4. GitHub App creation
 5. Slack App creation (if enabled)
 6. Security secrets generation
 7. Terraform configuration
 8. Terraform deployment (two phases)
 9. Post-deployment Slack setup (if enabled)
-10. Web app deployment
-11. Verification
-12. CI/CD setup (optional)
+10. Verification
+11. CI/CD setup (optional)
 
 ## Phase 1: Initial Questions
 
@@ -45,10 +44,9 @@ Use AskUserQuestion to gather:
 2. **GitHub account** - Which account/org hosts the private repo
 3. **Deployment name** - A globally unique identifier for URLs (e.g., their GitHub username, company
    name, or the random suffix generated above). Explain this creates URLs like
-   `open-inspect-{deployment_name}.vercel.app` and must be unique across all Vercel users.
+   `open-inspect-web-{deployment_name}.{subdomain}.workers.dev`.
 4. **Slack integration** - Yes or No
-5. **Prerequisites confirmation** - Confirm they have accounts on Cloudflare, Vercel, Modal,
-   Anthropic
+5. **Prerequisites confirmation** - Confirm they have accounts on Cloudflare, Modal, Anthropic
 
 ## Phase 2: Repository Setup
 
@@ -93,12 +91,6 @@ wrangler r2 bucket create open-inspect-{name}-tf-state
 Tell user to create R2 API Token at R2 → Overview → Manage R2 API Tokens with "Object Read & Write"
 permission.
 
-### Vercel
-
-- **API Token**: https://vercel.com/account/tokens
-- **Team/Account ID**: Settings → "Your ID" (even personal accounts have one, usually starts with
-  `team_`)
-
 ### Modal
 
 - **Token ID and Secret**: https://modal.com/settings or `modal token new`
@@ -121,11 +113,11 @@ Guide user through creating a GitHub App (handles both OAuth and repo access):
 
 1. Go to https://github.com/settings/apps → "New GitHub App"
 2. **Name**: `Open-Inspect-{YourName}` (globally unique)
-3. **Homepage URL**: `https://open-inspect-{deployment_name}.vercel.app`
+3. **Homepage URL**: `https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev`
 4. **Webhook**: Uncheck "Active"
 5. **Callback URL** (under "Identifying and authorizing users"):
-   `https://open-inspect-{deployment_name}.vercel.app/api/auth/callback/github`
-   - **CRITICAL**: Must match deployed Vercel URL exactly!
+   `https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev/api/auth/callback/github`
+   - **CRITICAL**: Must match deployed web app URL exactly!
 6. **Repository permissions**: Contents (Read & Write), Pull requests (Read & Write), Metadata
    (Read-only)
 7. Create app, note **App ID**
@@ -231,25 +223,18 @@ The App Home provides a settings interface where users can configure their prefe
 
 5. Invite bot to channels: `/invite @BotName`
 
-## Phase 10: Web App Deployment
-
-```bash
-npx vercel link --project open-inspect-{deployment_name}
-npx vercel --prod
-```
-
-## Phase 11: Verification
+## Phase 10: Verification
 
 ```bash
 curl https://open-inspect-control-plane-{deployment_name}.{subdomain}.workers.dev/health
 curl https://{workspace}--open-inspect-api-health.modal.run
-curl -I https://open-inspect-{deployment_name}.vercel.app
+curl -I https://open-inspect-web-{deployment_name}.{subdomain}.workers.dev
 ```
 
 Present deployment summary table. Instruct user to test: visit web app, sign in with GitHub, create
 session, send prompt.
 
-## Phase 12: CI/CD Setup (Optional)
+## Phase 11: CI/CD Setup (Optional)
 
 Ask if user wants GitHub Actions CI/CD. If yes, use `gh secret set` for all required secrets.
 
@@ -259,7 +244,6 @@ Ask if user wants GitHub Actions CI/CD. If yes, use `gh secret set` for all requ
 - **Durable Object errors**: Must follow two-phase deployment
 - **Slack bot not responding**: Check Event Subscriptions URL verified, bot invited to channel,
   reinstall if scopes changed
-- **Vercel build fails**: Terraform configures the monorepo build commands automatically
 - **"no such file or directory" for dist/index.js**: Build workers before Terraform:
   `npm run build -w @open-inspect/control-plane -w @open-inspect/slack-bot`
 - **Worker deployment fails**: Build shared package first: `npm run build -w @open-inspect/shared`
@@ -268,5 +252,5 @@ Ask if user wants GitHub Actions CI/CD. If yes, use `gh secret set` for all requ
 
 - Track all collected credentials securely throughout the process
 - Never log sensitive values
-- The callback URL MUST match the actual deployed Vercel URL
+- The callback URL MUST match the actual deployed web app URL
 - Two-phase Terraform deployment is required due to Cloudflare Durable Object constraints

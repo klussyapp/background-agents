@@ -2,9 +2,8 @@
 # Open-Inspect - Production Environment
 # =============================================================================
 # This configuration deploys the complete Open-Inspect infrastructure:
-# - Cloudflare Workers (control-plane, slack-bot)
+# - Cloudflare Workers (control-plane, slack-bot, web app)
 # - Cloudflare KV Namespaces
-# - Vercel Web App
 # - Modal Sandbox Infrastructure
 # =============================================================================
 
@@ -14,7 +13,7 @@ locals {
   # URLs for cross-service configuration
   control_plane_host = "open-inspect-control-plane-${local.name_suffix}.${var.cloudflare_worker_subdomain}.workers.dev"
   control_plane_url  = "https://${local.control_plane_host}"
-  web_app_url        = "https://open-inspect-${local.name_suffix}.vercel.app"
+  web_app_url        = "https://open-inspect-web-${local.name_suffix}.${var.cloudflare_worker_subdomain}.workers.dev"
   ws_url             = "wss://${local.control_plane_host}"
 
   # Worker script paths (deterministic output locations)
@@ -216,82 +215,68 @@ module "slack_bot_worker" {
 }
 
 # =============================================================================
-# Vercel Web App
+# Cloudflare Web App
 # =============================================================================
 
-module "web_app" {
-  source = "../../modules/vercel-project"
+# Build @open-inspect/shared before the web app (it depends on the shared package)
+resource "null_resource" "web_shared_build" {
+  triggers = {
+    always_run = timestamp()
+  }
 
-  project_name = "open-inspect-${local.name_suffix}"
-  team_id      = var.vercel_team_id
-  framework    = "nextjs"
+  provisioner "local-exec" {
+    command     = "npm run build"
+    working_dir = "${var.project_root}/packages/shared"
+  }
+}
 
-  # No git_repository - deploy via CLI/CI instead of auto-deploy on push
-  root_directory  = "packages/web"
-  install_command = "cd ../.. && npm install && npm run build -w @open-inspect/shared"
-  build_command   = "next build"
-
-  environment_variables = [
-    # GitHub OAuth
-    {
-      key       = "GITHUB_CLIENT_ID"
-      value     = var.github_client_id
-      targets   = ["production", "preview"]
-      sensitive = false
-    },
-    {
-      key       = "GITHUB_CLIENT_SECRET"
-      value     = var.github_client_secret
-      targets   = ["production", "preview"]
-      sensitive = true
-    },
-    # NextAuth
-    {
-      key       = "NEXTAUTH_URL"
-      value     = local.web_app_url
-      targets   = ["production"]
-      sensitive = false
-    },
-    {
-      key       = "NEXTAUTH_SECRET"
-      value     = var.nextauth_secret
-      targets   = ["production", "preview"]
-      sensitive = true
-    },
-    # Control Plane
-    {
-      key       = "CONTROL_PLANE_URL"
-      value     = local.control_plane_url
-      targets   = ["production", "preview"]
-      sensitive = false
-    },
-    {
-      key       = "NEXT_PUBLIC_WS_URL"
-      value     = local.ws_url
-      targets   = ["production", "preview"]
-      sensitive = false
-    },
-    # Internal
-    {
-      key       = "INTERNAL_CALLBACK_SECRET"
-      value     = var.internal_callback_secret
-      targets   = ["production", "preview"]
-      sensitive = true
-    },
-    # Access Control
-    {
-      key       = "ALLOWED_USERS"
-      value     = var.allowed_users
-      targets   = ["production", "preview"]
-      sensitive = false
-    },
-    {
-      key       = "ALLOWED_EMAIL_DOMAINS"
-      value     = var.allowed_email_domains
-      targets   = ["production", "preview"]
-      sensitive = false
-    },
+# Calculate hash of web source files for change detection
+data "external" "web_source_hash" {
+  program = ["bash", "-c", <<-EOF
+    cd ${var.project_root}/packages/web
+    if command -v sha256sum &> /dev/null; then
+      hash=$(find src public -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" -o -name "*.json" \) -exec sha256sum {} \; 2>/dev/null | sha256sum | cut -d' ' -f1)
+    else
+      hash=$(find src public -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" -o -name "*.json" \) -exec shasum -a 256 {} \; 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+    fi
+    echo "{\"hash\": \"$hash\"}"
+  EOF
   ]
+}
+
+module "web_app" {
+  source = "../../modules/cloudflare-nextjs"
+
+  cloudflare_account_id       = var.cloudflare_account_id
+  cloudflare_api_token        = var.cloudflare_api_token
+  cloudflare_worker_subdomain = var.cloudflare_worker_subdomain
+
+  worker_name  = "open-inspect-web-${local.name_suffix}"
+  project_path = "${var.project_root}/packages/web"
+  source_hash  = data.external.web_source_hash.result.hash
+
+  # Build-time env vars (NEXT_PUBLIC_* are inlined by Next.js at build time)
+  build_env_vars = {
+    NEXT_PUBLIC_WS_URL = local.ws_url
+  }
+
+  # Non-sensitive runtime env vars
+  plain_text_vars = {
+    GITHUB_CLIENT_ID   = var.github_client_id
+    NEXTAUTH_URL       = local.web_app_url
+    CONTROL_PLANE_URL  = local.control_plane_url
+    ALLOWED_USERS      = var.allowed_users
+    ALLOWED_EMAIL_DOMAINS = var.allowed_email_domains
+  }
+
+  # Sensitive runtime env vars (set via wrangler secret bulk)
+  secrets = {
+    GITHUB_CLIENT_SECRET    = var.github_client_secret
+    NEXTAUTH_SECRET         = var.nextauth_secret
+    INTERNAL_CALLBACK_SECRET = var.internal_callback_secret
+  }
+
+  depends_on = [null_resource.web_shared_build]
 }
 
 # =============================================================================
