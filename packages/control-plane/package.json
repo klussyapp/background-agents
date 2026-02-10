@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=browser --target=es2022 --external:cloudflare:* --external:node:*",
+    "build": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=browser --target=es2022 --external:cloudflare:* --external:node:* --external:path --alias:node:os=./src/shims/node-os.ts --alias:node:async_hooks=./src/shims/node-async-hooks.ts",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
-    "@open-inspect/shared": "file:../shared"
+    "@open-inspect/shared": "file:../shared",
+    "agents": "^0.4.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.10",
